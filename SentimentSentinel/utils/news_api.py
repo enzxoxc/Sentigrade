@@ -4,7 +4,7 @@ import pandas as pd
 import time
 import google.generativeai as genai
 import random
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Optional
 from datetime import datetime
 
 def setup_api_keys():
@@ -24,37 +24,40 @@ def setup_api_keys():
     
     return api_key, cse_id, gemini_api_key, api_configured
 
-def search_news(query: str, api_key: Optional[str], cse_id: Optional[str], max_results: int = 20, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict[str, str]]:
+def search_news(query: str, api_key: Optional[str], cse_id: Optional[str], max_results: int = 10, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict[str, str]]:
     if not api_key or not cse_id:
         st.error("API Key or CSE ID not configured.")
         return []
-    
+
     try:
         service = build("customsearch", "v1", developerKey=api_key)
-        
+
         keywords = [k.strip() for k in query.split(",")]
-        refined_query = f'"{" AND ".join(keywords)}" site:news'
-        
+        refined_query = f'"{" AND ".join(keywords)}"'  # Removed site restriction to improve results
+
         if start_date and end_date:
             refined_query += f" after:{start_date} before:{end_date}"
 
-        start_index = 1
         results = []
+        start_index = 1
         while len(results) < max_results:
-            res = service.cse().list(q=refined_query, cx=cse_id, num=10, start=start_index).execute()
-            if 'items' in res:
-                results.extend(res['items'])
-                start_index += 10
-            else:
+            remaining = max_results - len(results)
+            batch_size = min(10, remaining)
+            res = service.cse().list(q=refined_query, cx=cse_id, num=batch_size, start=start_index).execute()
+            items = res.get('items', [])
+
+            if not items:
                 break
-            
+
+            results.extend(items)
+            start_index += batch_size  # Increment by batch size
+
         news_articles = []
         for item in results[:max_results]:
             if any(keyword.lower() in item['title'].lower() for keyword in keywords):
                 published_date = item.get('publishedTime', None)
                 if published_date:
                     try:
-                        # Parsing the date in the format returned by the API
                         published_date = datetime.strptime(published_date, "%a, %d %b %Y %H:%M:%S %Z")
                     except ValueError:
                         published_date = None
@@ -65,15 +68,15 @@ def search_news(query: str, api_key: Optional[str], cse_id: Optional[str], max_r
                     'source': item.get('displayLink', 'Unknown source'),
                     'date': published_date if published_date else 'Unknown date'
                 })
-        
-        # Sort the articles by date in descending order
-        news_articles.sort(key=lambda x: x['date'], reverse=True)
-        
-        return news_articles[:max_results]  # Return the top `max_results` most recent articles
-    
+
+        news_articles.sort(key=lambda x: x['date'] if x['date'] != 'Unknown date' else datetime.min, reverse=True)
+
+        return news_articles[:max_results]
+
     except Exception as e:
         st.error(f"Error searching news: {str(e)}")
         return []
+
 
 def gemini_analyze_sentiment(text: str, api_key: Optional[str]) -> Optional[int]:
     """
