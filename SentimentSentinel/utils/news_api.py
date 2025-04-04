@@ -5,7 +5,7 @@ import time
 import google.generativeai as genai
 import random
 from typing import List, Dict, Any, Optional
-from datetime import datetime, timedelta
+from datetime import datetime
 
 def setup_api_keys():
     """
@@ -24,7 +24,7 @@ def setup_api_keys():
     
     return api_key, cse_id, gemini_api_key, api_configured
 
-def search_news(query: str, api_key: Optional[str], cse_id: Optional[str], max_results: int = 10, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict[str, str]]:
+def search_news(query: str, api_key: Optional[str], cse_id: Optional[str], max_results: int = 20, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict[str, str]]:
     if not api_key or not cse_id:
         st.error("API Key or CSE ID not configured.")
         return []
@@ -75,7 +75,7 @@ def search_news(query: str, api_key: Optional[str], cse_id: Optional[str], max_r
         st.error(f"Error searching news: {str(e)}")
         return []
 
-def gemini_analyze_sentiment(text: str, api_key: Optional[str]) -> float:
+def gemini_analyze_sentiment(text: str, api_key: Optional[str]) -> Optional[int]:
     """
     Analyze sentiment of text using Google Gemini API.
     
@@ -84,11 +84,11 @@ def gemini_analyze_sentiment(text: str, api_key: Optional[str]) -> float:
         api_key (Optional[str]): Gemini API Key
         
     Returns:
-        float: Sentiment score between -1 (negative) and 1 (positive)
+        Optional[int]: Rounded sentiment score between -10 and 10
     """
     if not api_key:
         st.error("Gemini API Key not configured.")
-        return 0.0
+        return None
     
     try:
         # Configure the API key exactly as in the notebook
@@ -109,19 +109,24 @@ def gemini_analyze_sentiment(text: str, api_key: Optional[str]) -> float:
             # Ensure the score is in the range [-10, 10]
             sentiment_score = max(-10, min(10, sentiment_score))
             
-            # Normalize to range [-1, 1] for consistency with our app
-            normalized_score = sentiment_score / 10
+            # Round the score to the nearest whole number
+            rounded_score = round(sentiment_score)
             
-            return normalized_score
+            # Remove neutral sentiment (score = 0)
+            if rounded_score == 0:
+                return None
+            
+            return rounded_score
+        
         except ValueError:
             st.warning(f"Could not convert sentiment response to number: {response.text}")
-            return 0.0
+            return None
     except Exception as e:
         st.error(f"Error with Gemini API: {str(e)}")
-        return 0.0
+        return None
 
 def fetch_and_analyze_news(queries: List[str], 
-                          max_results_per_query: int = 10,
+                          max_results_per_query: int = 20,
                           with_progress: bool = True) -> pd.DataFrame:
     """
     Fetch news for multiple queries and analyze sentiment.
@@ -141,11 +146,11 @@ def fetch_and_analyze_news(queries: List[str],
         st.error("API keys not configured. Please set GOOGLE_API_KEY and GOOGLE_CSE_ID environment variables.")
         return pd.DataFrame()
     
-    # Calculate the date range (7 days before today)
+    # Fixed 7-day date range
     end_date = datetime.today()
-    start_date = end_date - timedelta(days=7)
+    start_date = end_date - pd.Timedelta(days=7)
     
-    # Display the date range
+    # Show the date range as display
     st.write(f"Date Range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
     
     # Show progress if requested
@@ -173,23 +178,24 @@ def fetch_and_analyze_news(queries: List[str],
                     progress_text.text(f"Analyzing sentiment for: {article['title']}")
                 
                 # Analyze sentiment
-                sentiment_score = 0.0
+                sentiment_score = 0
                 if gemini_api_key is not None:
                     sentiment_score = gemini_analyze_sentiment(article['title'], gemini_api_key)
                 
                 # Add to results
-                all_news.append({
-                    'query': query,
-                    'title': article['title'],
-                    'link': article['link'],
-                    'snippet': article['snippet'],
-                    'source': article['source'],
-                    'date': article['date'],
-                    'sentiment_score': sentiment_score
-                })
-                
-                # Count analyzed articles
-                total_articles_analyzed += 1
+                if sentiment_score is not None:  # Only add if sentiment is not neutral
+                    all_news.append({
+                        'query': query,
+                        'title': article['title'],
+                        'link': article['link'],
+                        'snippet': article['snippet'],
+                        'source': article['source'],
+                        'date': article['date'],
+                        'sentiment_score': sentiment_score
+                    })
+                    
+                    # Count analyzed articles
+                    total_articles_analyzed += 1
                 
                 # Add a small delay to avoid hitting API rate limits
                 time.sleep(random.uniform(0.5, 1.5))
@@ -217,17 +223,15 @@ def fetch_and_analyze_news(queries: List[str],
 
 def categorize_sentiment(score: float) -> str:
     """
-    Categorize sentiment score into positive, neutral, or negative.
+    Categorize sentiment score into positive or negative.
     
     Args:
-        score (float): Sentiment score between -1 and 1
+        score (float): Sentiment score between -10 and 10
         
     Returns:
-        str: Sentiment category ('positive', 'neutral', or 'negative')
+        str: Sentiment category ('positive', 'negative')
     """
-    if score >= 0.05:
+    if score > 0:
         return "positive"
-    elif score <= -0.05:
-        return "negative"
     else:
-        return "neutral"
+        return "negative"
